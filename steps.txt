@@ -1,0 +1,218 @@
+PROJECT: Monitor Inventory Levels in DynamoDB + CloudWatch Alerts (FROM SCRATCH)
+
+Goal: Automatically check product stock → send alert when stock is low.
+
+✅ STEP 1 — Create a DynamoDB Table
+Go to:
+
+AWS Console → DynamoDB → Create Table
+
+Table Details:
+Field	Value
+Table Name	Inventory
+Partition Key	ProductID (String)
+Sort Key	Not needed
+Add Sample Items:
+
+Go to Explore Table Items → Create Item and add:
+
+{
+  "ProductID": "101",
+  "ProductName": "iPhone 14",
+  "Stock": 5
+}
+
+
+Another:
+
+{
+  "ProductID": "102",
+  "ProductName": "Samsung S22",
+  "Stock": 30
+}
+
+
+Another:
+
+{
+  "ProductID": "103",
+  "ProductName": "AirPods Pro",
+  "Stock": 7
+}
+
+
+These values will be used by Lambda.
+
+✅ STEP 2 — Create an SNS Topic for Alerts
+Go to:
+
+AWS Console → SNS → Create Topic
+
+Topic Type: Standard
+
+Name: LowStockAlerts
+
+Then create a subscription:
+
+Protocol: Email
+
+Endpoint: your email (Gmail, etc.)
+
+You will receive a confirmation email → Click Confirm Subscription.
+
+Now SNS is ready to send alerts.
+
+✅ STEP 3 — Create IAM Role for Lambda
+
+Go to:
+AWS Console → IAM → Roles → Create Role
+
+Trusted entity: AWS Service
+
+Service: Lambda
+
+Attach permissions:
+
+✔ AmazonDynamoDBReadOnlyAccess
+✔ CloudWatchPutMetricData
+✔ AmazonSNSFullAccess
+✔ AWSLambdaBasicExecutionRole
+
+Name the role:
+➡ Lambda_DynamoDB_StockMonitor_Role
+
+✅ STEP 4 — Create Lambda Function (Reads DynamoDB + Sends Metrics + Sends Alerts)
+
+Go to:
+Lambda → Create Function
+
+Runtime: Node.js 18+ (or Python if you want later)
+
+Name: CheckStockLambda
+
+Execution Role: select the role from Step 3
+
+Replace code with this:
+const AWS = require("aws-sdk");
+const dynamodb = new AWS.DynamoDB.DocumentClient();
+const cloudwatch = new AWS.CloudWatch();
+const sns = new AWS.SNS();
+
+exports.handler = async () => {
+    const params = { TableName: "Inventory" };
+
+    const data = await dynamodb.scan(params).promise();
+
+    for (let item of data.Items) {
+        const stock = item.Stock;
+
+        // 1. Publish custom metric to CloudWatch
+        await cloudwatch.putMetricData({
+            Namespace: "InventoryMonitoring",
+            MetricData: [
+                {
+                    MetricName: "StockLevel",
+                    Dimensions: [{ Name: "ProductID", Value: item.ProductID }],
+                    Value: stock,
+                    Unit: "Count"
+                }
+            ]
+        }).promise();
+
+        // 2. If stock is low, send SNS alert
+        if (stock < 10) {
+            const message = `
+Low Stock Alert!
+Product: ${item.ProductName}
+Stock Left: ${stock}
+Product ID: ${item.ProductID}
+            `;
+
+            await sns.publish({
+                TopicArn: "arn:aws:sns:your-region:your-account-id:LowStockAlerts",
+                Message: message,
+                Subject: "⚠️ LOW STOCK ALERT"
+            }).promise();
+        }
+    }
+
+    return "Stock check complete";
+};
+
+🔧 Replace:
+
+your-region and your-account-id in TopicArn.
+
+You can find it in SNS → Your Topic → ARN.
+
+✅ STEP 5 — Create Custom CloudWatch Metric (Automatic)
+
+The Lambda function automatically sends metrics.
+
+To view:
+
+Go to CloudWatch → Metrics
+
+Select InventoryMonitoring (Namespace)
+
+Metric: StockLevel
+
+You will see metrics per product.
+
+✅ STEP 6 — Create a CloudWatch Alarm (Trigger When Stock Low)
+
+Go to:
+CloudWatch → Alarms → Create Alarm
+
+Configure:
+
+Select metric
+→ InventoryMonitoring → StockLevel → Per ProductID
+
+Choose a specific product for demonstration (you can repeat for others).
+
+Set condition:
+
+Threshold type: Static
+
+Whenever StockLevel is < 10
+
+Period: 1 minute
+
+Alarm actions:
+
+Choose SNS topic:
+➡ LowStockAlerts
+
+Name:
+➡ LowStockAlarm_iPhone14
+
+✅ STEP 7 — Schedule Lambda to Run Automatically
+
+Go to:
+EventBridge → Create Rule
+
+Name: CheckStockEvery5Minutes
+
+Schedule expression:
+
+rate(5 minutes)
+
+
+Target:
+✔ Lambda → CheckStockLambda
+
+Now Lambda checks stock every 5 minutes.
+
+🎯 And That's It — Your Project Is Complete
+
+Your system will now:
+
+✔ Read DynamoDB inventory
+✔ Push metrics to CloudWatch
+✔ Check if stock is < 10
+✔ Trigger CloudWatch alarm
+✔ Send alert through SNS email
+✔ Auto-run every 5 minutes
+
+🧱 Final Architecture Diagram (Explained)
